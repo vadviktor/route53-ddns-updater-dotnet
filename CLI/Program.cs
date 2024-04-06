@@ -24,29 +24,36 @@ builder.Configuration.GetSection("AWS").Bind(awsSettings);
 var rootCommand = new RootCommand("Update your Route53 DNS record with your current public IP address");
 
 var whatsMyIpCommand = new Command("whats-my-ip", "Check your public IP address");
-whatsMyIpCommand.SetHandler(whatsMyIpAsync);
-rootCommand.AddCommand(whatsMyIpCommand);
-
-var registeredIpCommand = new Command("registered-ip", "Check your Route53 registered IP address");
-registeredIpCommand.SetHandler(async context => await registeredIpAsync(awsSettings));
-rootCommand.AddCommand(registeredIpCommand);
-
-
-static async Task whatsMyIpAsync()
+whatsMyIpCommand.SetHandler(async () =>
 {
   try
   {
-    using var client = new HttpClient();
-    string ip = await client.GetStringAsync("http://checkip.amazonaws.com/");
+    var ip = await whatsMyIpAsync();
     Console.WriteLine($"Your public IP address is: {ip.Trim()}");
   }
   catch (HttpRequestException e)
   {
     Console.WriteLine($"Error: {e.Message}");
   }
+});
+rootCommand.AddCommand(whatsMyIpCommand);
+
+var registeredIpCommand = new Command("registered-ip", "Check your Route53 registered IP address");
+registeredIpCommand.SetHandler(async context =>
+{
+  var ip = await registeredIpAsync(awsSettings);
+  Console.WriteLine($"Your Route53 registered IP address for {awsSettings.RecordName} is: {ip}");
+});
+rootCommand.AddCommand(registeredIpCommand);
+
+
+static async Task<string> whatsMyIpAsync()
+{
+  using var client = new HttpClient();
+  return await client.GetStringAsync("http://checkip.amazonaws.com/");
 }
 
-static async Task registeredIpAsync(AwsSettings awsSettings)
+static async Task<string> registeredIpAsync(AwsSettings awsSettings)
 {
   var credentials = new BasicAWSCredentials(awsSettings.AccessKey, awsSettings.SecretKey);
   var route53Client = new AmazonRoute53Client(credentials, RegionEndpoint.GetBySystemName(awsSettings.Region));
@@ -56,9 +63,7 @@ static async Task registeredIpAsync(AwsSettings awsSettings)
     StartRecordName = awsSettings.RecordName,
     MaxItems = "1"
   });
-  var registeredIp = response.ResourceRecordSets[0].ResourceRecords[0].Value;
-
-  Console.WriteLine($"Your Route53 registered IP address for {awsSettings.RecordName} is: {registeredIp}");
+  return response.ResourceRecordSets[0].ResourceRecords[0].Value;
 }
 
 await rootCommand.InvokeAsync(args);
