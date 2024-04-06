@@ -4,7 +4,9 @@ using Amazon.Route53;
 using Amazon.Route53.Model;
 using Amazon.Runtime;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 
 HostApplicationBuilder builder = Host.CreateApplicationBuilder(args);
 IHostEnvironment env = builder.Environment;
@@ -12,6 +14,7 @@ builder.Configuration
   .AddJsonFile("appsettings.json", optional: true)
   .AddJsonFile($"appsettings.{env.EnvironmentName}.json");
 using IHost host = builder.Build();
+var logger = host.Services.GetRequiredService<ILogger<Program>>();
 
 SentrySdk.Init(options =>
 {
@@ -28,13 +31,13 @@ rootCommand.SetHandler(async context =>
   var registeredIp = await registeredIpAsync(awsSettings);
   if (publicIp == registeredIp)
   {
-    Console.WriteLine($"Your public IP address {publicIp} is already registered in Route53");
+    logger.LogInformation($"Your public IP address {publicIp} is already registered in Route53");
     return;
   }
 
-  Console.WriteLine($"Updating Route53 record {awsSettings.RecordName} from {registeredIp} to {publicIp}");
+  logger.LogInformation($"Updating Route53 record {awsSettings.RecordName} from {registeredIp} to {publicIp}");
   await updateIp(awsSettings, publicIp);
-  Console.WriteLine($"Route53 record {awsSettings.RecordName} updated to {publicIp}");
+  logger.LogInformation($"Route53 record {awsSettings.RecordName} updated to {publicIp}");
 });
 
 
@@ -44,11 +47,12 @@ whatsMyIpCommand.SetHandler(async () =>
   try
   {
     var ip = await whatsMyIpAsync();
-    Console.WriteLine($"Your public IP address is: {ip}");
+    logger.LogInformation($"Your public IP address is: {ip}");
   }
   catch (HttpRequestException e)
   {
-    Console.WriteLine($"Error: {e.Message}");
+    logger.LogError($"Error: {e.Message}");
+    SentrySdk.CaptureException(e);
   }
 });
 rootCommand.AddCommand(whatsMyIpCommand);
@@ -57,7 +61,7 @@ var registeredIpCommand = new Command("registered-ip", "Check your Route53 regis
 registeredIpCommand.SetHandler(async context =>
 {
   var ip = await registeredIpAsync(awsSettings);
-  Console.WriteLine($"Your Route53 registered IP address for {awsSettings.RecordName} is: {ip}");
+  logger.LogInformation($"Your Route53 registered IP address for {awsSettings.RecordName} is: {ip}");
 });
 rootCommand.AddCommand(registeredIpCommand);
 
