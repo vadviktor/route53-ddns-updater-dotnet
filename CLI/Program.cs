@@ -8,6 +8,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
+
 HostApplicationBuilder builder = Host.CreateApplicationBuilder(args);
 IHostEnvironment env = builder.Environment;
 builder.Configuration
@@ -16,44 +17,39 @@ builder.Configuration
 using IHost host = builder.Build();
 var logger = host.Services.GetRequiredService<ILogger<Program>>();
 
-SentrySdk.Init(options =>
-{
-  options.Dsn = builder.Configuration.GetValue<string>("SentryDsn");
-});
-
 AwsSettings awsSettings = new();
 builder.Configuration.GetSection("AWS").Bind(awsSettings);
+SentrySettings sentrySettings = new();
+builder.Configuration.GetSection("Sentry").Bind(sentrySettings);
+
+SentrySdk.Init(options => { options.Dsn = sentrySettings.Dsn; });
 
 var rootCommand = new RootCommand("Update your Route53 DNS record with your current public IP address");
 rootCommand.SetHandler(async context =>
 {
-  var publicIp = await whatsMyIpAsync();
+  await sentryCronCheckinAsync(sentrySettings, SentryCronStatus.InProgress);
+
+  var publicIp = await whatsMyIpAsync(sentrySettings, logger);
   var registeredIp = await registeredIpAsync(awsSettings);
   if (publicIp == registeredIp)
   {
     logger.LogInformation($"Your public IP address {publicIp} is already registered in Route53");
+    await sentryCronCheckinAsync(sentrySettings, SentryCronStatus.Ok);
     return;
   }
 
   logger.LogInformation($"Updating Route53 record {awsSettings.RecordName} from {registeredIp} to {publicIp}");
   await updateIp(awsSettings, publicIp);
   logger.LogInformation($"Route53 record {awsSettings.RecordName} updated to {publicIp}");
+
+  await sentryCronCheckinAsync(sentrySettings, SentryCronStatus.Ok);
 });
 
-
 var whatsMyIpCommand = new Command("whats-my-ip", "Check your public IP address");
-whatsMyIpCommand.SetHandler(async () =>
+whatsMyIpCommand.SetHandler(async context =>
 {
-  try
-  {
-    var ip = await whatsMyIpAsync();
-    logger.LogInformation($"Your public IP address is: {ip}");
-  }
-  catch (HttpRequestException e)
-  {
-    logger.LogError($"Error: {e.Message}");
-    SentrySdk.CaptureException(e);
-  }
+  var ip = await whatsMyIpAsync(sentrySettings, logger);
+  logger.LogInformation($"Your public IP address is: {ip}");
 });
 rootCommand.AddCommand(whatsMyIpCommand);
 
@@ -100,11 +96,29 @@ static async Task updateIp(AwsSettings awsSettings, string publicIp)
   });
 }
 
-static async Task<string> whatsMyIpAsync()
+static async Task<string> whatsMyIpAsync(SentrySettings sentrySettings, ILogger logger)
+{
+  try
+  {
+    using var client = new HttpClient();
+    var ip = await client.GetStringAsync("http://checkip.amazonaws.com/");
+    return ip.Trim();
+  }
+  catch (HttpRequestException e)
+  {
+    await sentryCronCheckinAsync(sentrySettings, SentryCronStatus.Error);
+    logger.LogError($"Error: {e.Message}");
+    SentrySdk.CaptureException(e);
+    Environment.Exit(1);
+  }
+
+  return string.Empty;
+}
+
+static async Task sentryCronCheckinAsync(SentrySettings sentrySettings, string status)
 {
   using var client = new HttpClient();
-  var ip = await client.GetStringAsync("http://checkip.amazonaws.com/");
-  return ip.Trim();
+  await client.GetStringAsync($"{sentrySettings.Crons}?status={status}");
 }
 
 static async Task<string> registeredIpAsync(AwsSettings awsSettings)
