@@ -21,34 +21,33 @@ AwsSettings awsSettings = new();
 builder.Configuration.GetSection("AWS").Bind(awsSettings);
 SentrySettings sentrySettings = new();
 builder.Configuration.GetSection("Sentry").Bind(sentrySettings);
+HealthcheckSettings healthcheckSettings = new();
+builder.Configuration.GetSection("Healthcheck").Bind(healthcheckSettings);
 
 SentrySdk.Init(options => { options.Dsn = sentrySettings.Dsn; });
 
 var rootCommand = new RootCommand("Update your Route53 DNS record with your current public IP address");
 rootCommand.SetHandler(async context =>
 {
-  await sentryCronCheckinAsync(sentrySettings, SentryCronStatus.InProgress);
+  await cronCheckinAsync(healthcheckSettings.Url);
 
-  var publicIp = await whatsMyIpAsync(sentrySettings, logger);
+  var publicIp = await whatsMyIpAsync(healthcheckSettings, logger);
   var registeredIp = await registeredIpAsync(awsSettings);
   if (publicIp == registeredIp)
   {
     logger.LogInformation($"Your public IP address {publicIp} is already registered in Route53");
-    await sentryCronCheckinAsync(sentrySettings, SentryCronStatus.Ok);
     return;
   }
 
   logger.LogInformation($"Updating Route53 record {awsSettings.RecordName} from {registeredIp} to {publicIp}");
   await updateIp(awsSettings, publicIp);
   logger.LogInformation($"Route53 record {awsSettings.RecordName} updated to {publicIp}");
-
-  await sentryCronCheckinAsync(sentrySettings, SentryCronStatus.Ok);
 });
 
 var whatsMyIpCommand = new Command("whats-my-ip", "Check your public IP address");
 whatsMyIpCommand.SetHandler(async context =>
 {
-  var ip = await whatsMyIpAsync(sentrySettings, logger);
+  var ip = await whatsMyIpAsync(healthcheckSettings, logger);
   logger.LogInformation($"Your public IP address is: {ip}");
 });
 rootCommand.AddCommand(whatsMyIpCommand);
@@ -96,7 +95,7 @@ static async Task updateIp(AwsSettings awsSettings, string publicIp)
   });
 }
 
-static async Task<string> whatsMyIpAsync(SentrySettings sentrySettings, ILogger logger)
+static async Task<string> whatsMyIpAsync(HealthcheckSettings healthcheckSettings, ILogger logger)
 {
   try
   {
@@ -106,7 +105,7 @@ static async Task<string> whatsMyIpAsync(SentrySettings sentrySettings, ILogger 
   }
   catch (HttpRequestException e)
   {
-    await sentryCronCheckinAsync(sentrySettings, SentryCronStatus.Error);
+    await cronCheckinAsync(healthcheckSettings.Url);
     logger.LogError($"Error: {e.Message}");
     SentrySdk.CaptureException(e);
     Environment.Exit(1);
@@ -115,10 +114,12 @@ static async Task<string> whatsMyIpAsync(SentrySettings sentrySettings, ILogger 
   return string.Empty;
 }
 
-static async Task sentryCronCheckinAsync(SentrySettings sentrySettings, string status)
+static async Task cronCheckinAsync(string? url)
 {
+  if( string.IsNullOrEmpty(url) ) { return; }
+
   using var client = new HttpClient();
-  await client.GetStringAsync($"{sentrySettings.Crons}?status={status}");
+  await client.GetStringAsync(url);
 }
 
 static async Task<string> registeredIpAsync(AwsSettings awsSettings)
